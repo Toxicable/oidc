@@ -1,6 +1,6 @@
 {
   "name": "@toxicable/oidc",
-  "version": "0.0.0-alpha-0",
+  "version": "0.0.0-alpha-9",
   "description": "An OpenId Client for Angular",
    "scripts": {
     "karma": "echo put karma back here",
@@ -8,7 +8,7 @@
     "test:ngc": "ngc -p ./spec/ngc/tsconfig.ngc.json",
     "test": "npm run test:unit && npm run test:ngc",
     "clean:pre": "rimraf release",
-    "clean:post": "rimraf \"src/**/*.ngfactory.ts\" && rimraf \"src/**/*.ngsummary.json\" ",
+    "clean:post": "rimraf \"src/**/*.ngfactory.ts\" && rimraf \"**/*.ngsummary.json\" ",
     "clean:ngc": "rimraf \"spec/ngc/output\" && rimraf \"spec/ngc/ngfactory\"",
     "copy": "cpy LICENSE package.json README.md release",
     "build:js": "ngc -p tsconfig.dist.json",
@@ -22,7 +22,7 @@
     "posttest": "npm run clean:ngc"
   },
   "dependencies": {
-    "angular2-jwt":"^0.1.27"
+    "jwt-decode":"2.1.0"
   },
   "peerDependencies": {
     "@angular/http":"^2.0.0",

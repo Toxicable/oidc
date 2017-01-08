@@ -1,22 +1,22 @@
 import { NgModule, ModuleWithProviders } from '@angular/core';
 import { OpenIdClientService } from './auth-client.service';
 import { OpenIdClientConfig } from './config';
+import { Storage, StorageBackend, LocalStorageBackend } from './async-storage';
 
-@NgModule({
-  providers: [
-    OpenIdClientService,
-  ],
-})
-class RootOpenIdCLientModule { }
+@NgModule()
+export class RootOpenIdClientModule { }
 
 export class OpenIdClientModule {
   static withConfig(config: OpenIdClientConfig): ModuleWithProviders {
     return {
-      ngModule: RootOpenIdCLientModule,
+      ngModule: RootOpenIdClientModule,
       providers: [
-        { provide: 'config', useValue: config}
+        OpenIdClientService,
+        { provide: StorageBackend, useClass: LocalStorageBackend },
+        Storage,
+        { provide: 'config', useValue: config }
       ]
-    }
+    };
   }
 
- }
+}

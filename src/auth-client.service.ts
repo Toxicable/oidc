@@ -5,21 +5,26 @@ import { Observable } from 'rxjs/Observable';
 import { Subscription } from 'rxjs/Subscription';
 import { BehaviorSubject } from 'rxjs/BehaviorSubject';
 import { Observer } from 'rxjs/Observer';
-import { Storage } from './storage';
+import { Storage, LocalStorageBackend } from './async-storage';
 import { Refresh } from './models/refresh';
-import { JwtHelper } from 'angular2-jwt';
+import { OpenIdClientConfig } from './config';
+
+const jwtDecode = require('jwt-decode');
+
 import 'rxjs/add/operator/map';
+import 'rxjs/add/operator/mergeMap';
 import 'rxjs/add/operator/first';
 import 'rxjs/add/operator/catch';
 import 'rxjs/add/operator/do';
 import 'rxjs/add/operator/filter';
+
 import 'rxjs/add/observable/of';
 import 'rxjs/add/observable/interval';
 import 'rxjs/add/observable/combineLatest';
-import { OpenIdClientConfig } from './config';
 
 declare let FB: any;
 declare let gapi: any;
+
 
 @Injectable()
 export class OpenIdClientService {
@@ -28,8 +33,6 @@ export class OpenIdClientService {
     private storage: Storage,
     @Inject('config') private config: OpenIdClientConfig
   ) {
-    this.jwtHelper = new JwtHelper();
-
     this.state = new BehaviorSubject<AuthState>(this.initalState);
     this.tokens$ = Observable.combineLatest(this.state, this.authReady$)
       .filter(state => state[1])
@@ -43,12 +46,11 @@ export class OpenIdClientService {
 
     this.refreshSubscription$ = this.startupTokenRefresh()
       .do(() => this.scheduleRefresh())
-      .subscribe();
+      .subscribe(() => {}, error => console.info(error));
   }
 
-  private initalState = { profile: null, loggedIn: false, tokens: null };
+  private initalState = { profile: null, tokens: null };
   private storageName = 'oidc-token';
-  private jwtHelper: JwtHelper;
   private authReady$ = new BehaviorSubject<boolean>(false);
   private state: BehaviorSubject<AuthState>;
   private refreshSubscription$: Subscription;
@@ -82,7 +84,7 @@ export class OpenIdClientService {
   registerExternal(provider: string) {
     return this.authorizeExternal(provider)
       .flatMap((accessToken: string) => {
-        return this.http.post('/api/account/registerexternal', { accessToken, provider, })
+        return this.http.post(this.config.registerExternalEndpoint, { accessToken, provider, })
           .flatMap(() => this.getTokens({ assertion: accessToken, provider }, 'urn:ietf:params:oauth:grant-type:external_identity_token')
             .do(() => this.scheduleRefresh()));
       });
@@ -143,27 +145,22 @@ export class OpenIdClientService {
     let headers = new Headers({ 'Content-Type': 'application/x-www-form-urlencoded' });
     let options = new RequestOptions({ headers: headers });
 
-    Object.assign(data, {
-      grant_type: grantType,
-      scope: 'openid offline_access'
-    });
-    //TODO: replace with formdata
+    Object.assign(data, { grant_type: grantType, scope: 'openid offline_access'});
 
     let encodedData = Object.keys(data)
-      //TODO: fix this TS issue
-      .map(key => encodeURIComponent(key) + '=' + encodeURIComponent((<any>data)[key]))
+      .map(key => encodeURIComponent(key) + '=' + encodeURIComponent(data[key]))
       .join('&');
 
-    return this.http.post('/connect/token', encodedData, options)
+    return this.http.post(this.config.tokenEndpoint, encodedData, options)
       .map(res => res.json())
       .map((tokens: AuthTokens) => {
         let now = new Date();
         tokens.expiration_date = new Date(now.getTime() + tokens.expires_in * 1000).getTime().toString();
 
-        let profile: Profile = this.jwtHelper.decodeToken(tokens.id_token);
+        let profile: Profile = jwtDecode(tokens.id_token);
 
         this.storage.setItem(this.storageName, tokens);
-        this.state.next({ tokens, profile, loggedIn: true });
+        this.state.next({ tokens, profile });
         this.authReady$.next(true);
       });
   }
@@ -178,7 +175,7 @@ export class OpenIdClientService {
     return this.tokens$
       .first()
       .flatMap(tokens => this.getTokens({ refresh_token: tokens.refresh_token }, 'refresh_token')
-      //.catch(error => Observable.throw('Session Expired'))
+      .catch(error => Observable.throw('Session Expired'))
       );
   }
 
@@ -190,10 +187,10 @@ export class OpenIdClientService {
           this.authReady$.next(true);
           return Observable.throw('No token in Storage');
         }
-        let profile: Profile = this.jwtHelper.decodeToken(tokens.id_token);
-        this.state.next({ tokens, profile, loggedIn: false });
+        let profile: Profile = jwtDecode(tokens.id_token);
+        this.state.next({ tokens, profile });
 
-        if (+tokens.expiration_date < new Date().getTime()) {
+        if (+tokens.expiration_date > new Date().getTime()) {
           this.authReady$.next(true);
         }
 
@@ -214,3 +211,4 @@ export class OpenIdClientService {
       .subscribe();
   }
 }
+
