@@ -22,6 +22,7 @@ import 'rxjs/add/operator/filter';
 import 'rxjs/add/observable/of';
 import 'rxjs/add/observable/interval';
 import 'rxjs/add/observable/combineLatest';
+import 'rxjs/add/observable/throw';
 
 declare let FB: any;
 declare let gapi: any;
@@ -50,6 +51,10 @@ export class OpenIdClientService {
       .subscribe(() => { }, error => console.info(error));
   }
 
+  private providerOAuthMap = {
+    google: 'https://accounts.google.com/o/oauth2/auth',
+    facebook: 'https://www.facebook.com/v2.8/dialog/oauth'
+  };
   private initalState = { profile: null, tokens: null };
   private storageName = 'oidc-token';
   private authReady$ = new BehaviorSubject<boolean>(false);
@@ -60,31 +65,15 @@ export class OpenIdClientService {
   profile$: Observable<Profile>;
   loggedIn$: Observable<boolean>;
 
-  registerExternal(provider: string) {
-    return this.authorizeExternal(provider)
-      .flatMap((accessToken: string) =>
-        this.http.post(this.config.registerExternalEndpoint, { accessToken, provider, })
-          .flatMap(() => this.getTokens({ assertion: accessToken, provider }, 'urn:ietf:params:oauth:grant-type:external_identity_token')
-            .do(() => this.scheduleRefresh())
-          )
-      );
+  private backendRegister(accessToken: string, provider: string) {
+    return this.http.post(this.config.registerExternalEndpoint, { accessToken, provider, });
   }
 
-  login(provider: string) {
-    return this.authorizeExternal(provider)
-      .flatMap((accessToken: string) =>
-        this.getTokens({ assertion: accessToken, provider }, 'urn:ietf:params:oauth:grant-type:external_identity_token')
-          .do(() => this.scheduleRefresh()
-          )
-      );
+  private backendLogin(accessToken: string, provider: string) {
+    return this.getTokens({ assertion: accessToken, provider }, 'urn:ietf:params:oauth:grant-type:external_identity_token');
   }
 
-  providerOAuthMap = {
-    google: 'https://accounts.google.com/o/oauth2/auth',
-    facebook: 'https://www.facebook.com/v2.8/dialog/oauth'
-  };
-
-  authorizeExternal(providerName: string) {
+  private authorizeExternal(providerName: string) {
     let provider = this.config.providersConfig[providerName];
     if (!provider) {
       throw new Error('No config provided for provider: ' + providerName);
@@ -108,6 +97,9 @@ export class OpenIdClientService {
     return Observable.interval(200)
       .map(() => {
         try {
+          // accessing href cross origins will throw
+          // so we ignore ones that throw and pass the ones that don't
+          // since we know they are on our origin
           return oauthWindow.location.href;
         } catch (error) {
           return '';
@@ -120,6 +112,7 @@ export class OpenIdClientService {
         if (queryString === '') {
           throw new Error('An error occured while retriving the access_token, the returned url was "" which usually means the user closed the window ');
         }
+        //TODO: use router to parse url
         let regexParts = /access_token=(.*?)&/.exec(queryString);
         if (!regexParts) {
           throw new Error('An error occured while retriving the access_token, the returned url was: ' + queryString);
@@ -128,17 +121,54 @@ export class OpenIdClientService {
       });
   }
 
-  isInRole(usersRole: string): Observable<boolean> {
-    return this.profile$
-      .map(profile => profile.role.find(role => role === usersRole) !== undefined);
+
+
+  registerExternal(provider: string, autoLogin = true): Observable<void | Response> {
+    return this.authorizeExternal(provider)
+      .flatMap((accessToken: string) => {
+        let register$ = this.backendRegister(accessToken, provider);
+        if (autoLogin) {
+          return register$.flatMap(() => this.backendLogin(accessToken, provider));
+        }
+        return register$;
+      })
+      .do(() => this.scheduleRefresh());
   }
 
+  loginExternal(provider: string, autoRegister = true) {
+    let localAccessToken: string;
+    return this.authorizeExternal(provider)
+      .flatMap((accessToken: string) => {
+        localAccessToken = accessToken;
+        return this.backendLogin(accessToken, provider);
+      })
+      .catch(res => {
+        if (autoRegister) {
+          let response = res.json();
+          if (response) {
+            if (response.error_description === 'The user does not exist') {
+              return this.backendRegister(localAccessToken, provider)
+                .flatMap(() => this.backendLogin(localAccessToken, provider));
+            }
+          }
+        }
+        return Observable.throw(res);
+      })
+      .do(() => this.scheduleRefresh());
 
+  }
 
   logout() {
     this.state.next(this.initalState);
-    this.refreshSubscription$.unsubscribe();
+    if (this.refreshSubscription$) {
+      this.refreshSubscription$.unsubscribe();
+    }
     this.storage.removeItem(this.storageName);
+  }
+
+  isInRole(usersRole: string): Observable<boolean> {
+    return this.profile$
+      .map(profile => profile.role.find(role => role === usersRole) !== undefined);
   }
 
   getTokens(data: Refresh | ExternalLogin, grantType: string) {
@@ -152,8 +182,8 @@ export class OpenIdClientService {
       .join('&');
 
     return this.http.post(this.config.tokenEndpoint, encodedData, options)
-      .map(res => res.json())
-      .map((tokens: AuthTokens) => {
+      .map(res => {
+        let tokens: AuthTokens = res.json();
         let now = new Date();
         tokens.expiration_date = new Date(now.getTime() + tokens.expires_in * 1000).getTime().toString();
 
@@ -162,18 +192,13 @@ export class OpenIdClientService {
         this.storage.setItem(this.storageName, tokens);
         this.state.next({ tokens, profile });
         this.authReady$.next(true);
+        return res;
       });
   }
 
-  unsubscribeRefresh() {
-    if (this.refreshSubscription$) {
-      this.refreshSubscription$.unsubscribe();
-    }
-  }
 
   refreshTokens() {
-    return this.tokens$
-      .first()
+    return this.tokens$.first()
       .flatMap(tokens => this.getTokens({ refresh_token: tokens.refresh_token }, 'refresh_token')
         .catch(error => Observable.throw('Session Expired'))
       );

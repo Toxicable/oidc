@@ -22,5 +22,6 @@ export default {
     'rxjs/add/observable/of': 'Rx.Observable',
     'rxjs/add/observable/interval': 'Rx.Observable',
     'rxjs/add/observable/combineLatest': 'Rx.Observable',
+    'rxjs/add/observable/throw': 'Rx.Observable',
   }
 }
