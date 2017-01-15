@@ -48,7 +48,10 @@ export class OpenIdClientService {
 
     this.refreshSubscription$ = this.startupTokenRefresh()
       .do(() => this.scheduleRefresh())
-      .subscribe(() => { }, error => console.info(error));
+      .subscribe(() => { }, error => {
+        console.error('oidc error: ');
+        console.error(error);
+      });
   }
 
   private providerOAuthMap = {
@@ -105,14 +108,16 @@ export class OpenIdClientService {
           return '';
         }
       })
+      // we're done with the auth process once we're back at the redirect url or once the window has been closed for some other reason
       .filter(responseUrl => responseUrl.startsWith(provider.redirect_uri) || !!oauthWindow.closed)
       .first()
+      // make sure it closed for when the user dosent close it themselves
       .do(responseUrl => oauthWindow.close())
       .map(queryString => {
         if (queryString === '') {
           throw new Error('An error occured while retriving the access_token, the returned url was "" which usually means the user closed the window ');
         }
-        //TODO: use router to parse url
+        //TODO: use Router to parse url
         let regexParts = /access_token=(.*?)&/.exec(queryString);
         if (!regexParts) {
           throw new Error('An error occured while retriving the access_token, the returned url was: ' + queryString);
@@ -120,8 +125,6 @@ export class OpenIdClientService {
         return regexParts[1];
       });
   }
-
-
 
   registerExternal(provider: string, autoLogin = true): Observable<void | Response> {
     return this.authorizeExternal(provider)
@@ -155,7 +158,6 @@ export class OpenIdClientService {
         return Observable.throw(res);
       })
       .do(() => this.scheduleRefresh());
-
   }
 
   logout() {
@@ -196,9 +198,9 @@ export class OpenIdClientService {
       });
   }
 
-
   refreshTokens() {
-    return this.tokens$.first()
+    return this.state.first()
+      .map(state => state.tokens)
       .flatMap(tokens => this.getTokens({ refresh_token: tokens.refresh_token }, 'refresh_token')
         .catch(error => Observable.throw('Session Expired'))
       );

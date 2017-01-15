@@ -1,6 +1,6 @@
 {
   "name": "@toxicable/oidc",
-  "version": "0.0.0-alpha-14",
+  "version": "0.0.0-alpha-16",
   "description": "An OpenId Client for Angular",
    "scripts": {
     "karma": "echo put karma back here",
