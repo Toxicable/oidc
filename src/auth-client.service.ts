@@ -1,5 +1,6 @@
 import { Injectable, Inject, ChangeDetectorRef } from '@angular/core';
-import { Http, Headers, RequestOptions, Response } from '@angular/http';
+import { Http, Headers, RequestOptions, Response, URLSearchParams } from '@angular/http';
+import { DefaultUrlSerializer } from '@angular/router'
 import { Profile, AuthTokens, AuthState, ExternalLogin } from './models';
 import { Observable } from 'rxjs/Observable';
 import { Subscription } from 'rxjs/Subscription';
@@ -34,96 +35,44 @@ export class OpenIdClientService {
     private http: Http,
     private storage: Storage,
     @Inject('config') private config: OpenIdClientConfig
-  ) {
-    this.state = new BehaviorSubject<AuthState>(this.initalState);
-    this.tokens$ = Observable.combineLatest(this.state, this.authReady$)
-      .filter(state => state[1])
-      .map(state => state[0].tokens);
-
-    this.profile$ = Observable.combineLatest(this.state, this.authReady$)
-      .filter(state => state[1])
-      .map(state => state[0].profile);
-
-    this.loggedIn$ = this.tokens$.map(tokens => !!tokens);
-
-    this.refreshSubscription$ = this.startupTokenRefresh()
-      .do(() => this.scheduleRefresh())
-      .subscribe(() => { }, error => {
-        console.error('oidc error: ');
-        console.error(error);
-      });
-  }
+  ) { }
 
   private providerOAuthMap = {
     google: 'https://accounts.google.com/o/oauth2/auth',
     facebook: 'https://www.facebook.com/v2.8/dialog/oauth'
   };
-  private initalState = { profile: null, tokens: null };
+  private initalState: AuthState = { profile: null, tokens: null, authReady: false };
   private storageName = 'oidc-token';
   private authReady$ = new BehaviorSubject<boolean>(false);
   private state: BehaviorSubject<AuthState>;
   private refreshSubscription$: Subscription;
 
+  state$: Observable<AuthState>;
   tokens$: Observable<AuthTokens>;
   profile$: Observable<Profile>;
   loggedIn$: Observable<boolean>;
 
-  private backendRegister(accessToken: string, provider: string) {
-    return this.http.post(this.config.registerExternalEndpoint, { accessToken, provider, });
-  }
+  init() {
+    this.state = new BehaviorSubject<AuthState>(this.initalState);
+    this.state$ = this.state.asObservable();
+    //  = Observable.combineLatest(this.state, this.authReady$)
+    //   .filter(state => state[1])
+    //   .map(state => state[0].tokens);
 
-  private backendLogin(accessToken: string, provider: string) {
-    return this.getTokens({ assertion: accessToken, provider }, 'urn:ietf:params:oauth:grant-type:external_identity_token');
-  }
+    this.tokens$ = this.state.filter(state => state.authReady)
+    .map(state => state.tokens);
 
-  private authorizeExternal(providerName: string) {
-    let provider = this.config.providersConfig[providerName];
-    if (!provider) {
-      throw new Error('No config provided for provider: ' + providerName);
-    }
+    // this.profile$ = Observable.combineLatest(this.state, this.authReady$)
+    //   .filter(state => state[1])
+    //   .map(state => state[0].profile);
 
-    let origin = window.location.origin;
+    this.profile$ = this.state.filter(state => state.authReady)
+    .map(state => state.profile);
 
-    let url = this.providerOAuthMap[providerName] + '?' +
-      'client_id=' + encodeURIComponent(provider.client_id) +
-      '&scope=' + encodeURIComponent(provider.scopes) +
-      '&redirect_uri=' + encodeURIComponent(provider.redirect_uri) +
-      '&response_type=token' +
-      '&origin=' + encodeURIComponent(origin);
+    this.loggedIn$ = this.tokens$.map(tokens => !!tokens);
 
-    let oauthWindow = window.open(url, 'name', 'height=600,width=450');
-
-    if (window.focus) {
-      oauthWindow.focus();
-    }
-
-    return Observable.interval(200)
-      .map(() => {
-        try {
-          // accessing href cross origins will throw
-          // so we ignore ones that throw and pass the ones that don't
-          // since we know they are on our origin
-          return oauthWindow.location.href;
-        } catch (error) {
-          return '';
-        }
-      })
-      // we're done with the auth process once we're back at the redirect url or once the window has been closed for some other reason
-      .filter(responseUrl => responseUrl.startsWith(provider.redirect_uri) || !!oauthWindow.closed)
-      .first()
-      // make sure it closed for when the user dosent close it themselves
-      .do(responseUrl => oauthWindow.close())
-      .map(queryString => {
-        if (queryString === '') {
-          throw new Error('An error occured while retriving the access_token, the returned url was "" which usually means the user closed the window ');
-        }
-        //TODO: use Router to parse url
-        let regexParts = /access_token=(.*?)&/.exec(queryString);
-        if (!regexParts) {
-          throw new Error('An error occured while retriving the access_token, the returned url was: ' + queryString);
-        }
-        return regexParts[1];
-      });
+    return this.startupTokenRefresh()
+      .do(() => this.scheduleRefresh());
   }
 
   registerExternal(provider: string, autoLogin = true): Observable<void | Response> {
@@ -161,7 +110,7 @@ export class OpenIdClientService {
   }
 
   logout() {
-    this.state.next(this.initalState);
+    this.updateState(this.initalState);
     if (this.refreshSubscription$) {
       this.refreshSubscription$.unsubscribe();
     }
@@ -173,31 +122,6 @@ export class OpenIdClientService {
       .map(profile => profile.role.find(role => role === usersRole) !== undefined);
   }
 
-  getTokens(data: Refresh | ExternalLogin, grantType: string) {
-    let headers = new Headers({ 'Content-Type': 'application/x-www-form-urlencoded' });
-    let options = new RequestOptions({ headers: headers });
-
-    Object.assign(data, { grant_type: grantType, scope: 'openid offline_access' });
-
-    let encodedData = Object.keys(data)
-      .map(key => encodeURIComponent(key) + '=' + encodeURIComponent(data[key]))
-      .join('&');
-
-    return this.http.post(this.config.tokenEndpoint, encodedData, options)
-      .map(res => {
-        let tokens: AuthTokens = res.json();
-        let now = new Date();
-        tokens.expiration_date = new Date(now.getTime() + tokens.expires_in * 1000).getTime().toString();
-
-        let profile: Profile = jwtDecode(tokens.id_token);
-
-        this.storage.setItem(this.storageName, tokens);
-        this.state.next({ tokens, profile });
-        this.authReady$.next(true);
-        return res;
-      });
-  }
-
   refreshTokens() {
     return this.state.first()
       .map(state => state.tokens)
@@ -206,77 +130,126 @@ export class OpenIdClientService {
       );
   }
 
-  startupTokenRefresh() {
+  private updateState(newState: AuthState) {
+    let previoudState = this.state.getValue();
+    this.state.next(Object.assign(newState, previoudState));
+  }
+
+  private backendRegister(accessToken: string, provider: string) {
+    return this.http.post(this.config.registerExternalEndpoint, { accessToken, provider, });
+  }
+
+  private backendLogin(accessToken: string, provider: string) {
+    return this.getTokens({ assertion: accessToken, provider }, 'urn:ietf:params:oauth:grant-type:external_identity_token');
+  }
+
+  private authorizeExternal(providerName: string) {
+    let provider = this.config.providersConfig[providerName];
+    if (!provider) {
+      throw new Error('No config provided for provider: ' + providerName);
+    }
+
+    let origin = window.location.origin;
+    let params = new URLSearchParams();
+    params.append('client_id', provider.client_id);
+    params.append('scope', provider.scopes);
+    params.append('redirect_uri', provider.redirect_uri);
+    params.append('response_type', 'token');
+    params.append('origin', origin);
+
+    let url = this.providerOAuthMap[providerName] + '?' + params.toString();
+
+    let oauthWindow = window.open(url, 'name', 'height=600,width=450');
+
+    if (window.focus) {
+      oauthWindow.focus();
+    }
+
+    return Observable.interval(200)
+      .map(() => {
+        try {
+          // accessing href cross origins will throw
+          // so we ignore ones that throw and pass the ones that don't
+          // since we know they are on our origin
+          return oauthWindow.location.href;
+        } catch (error) {
+          return '';
+        }
+      })
+      // we're done with the auth process once we're back at the redirect url or once the window has been closed for some other reason
+      .filter(responseUrl => responseUrl.startsWith(provider.redirect_uri) || !!oauthWindow.closed)
+      .first()
+      // make sure it closed for when the user dosent close it themselves
+      .do(responseUrl => oauthWindow.close())
+      .map(queryString => {
+        if (queryString === '') {
+          throw new Error('An error occured while retriving the access_token, the returned url was "" which usually means the user closed the window ');
+        }
+        //TODO: use better method for parsing
+        let regexParts = /access_token=(.*?)&/.exec(queryString);
+        if (!regexParts) {
+          throw new Error('An error occured while retriving the access_token, the returned url was: ' + queryString);
+        }
+        return regexParts[1];
+      });
+  }
+
+  private getTokens(data: Refresh | ExternalLogin, grantType: string) {
+    let headers = new Headers({ 'Content-Type': 'application/x-www-form-urlencoded' });
+    let options = new RequestOptions({ headers: headers });
+
+    Object.assign(data, { grant_type: grantType, scope: 'openid offline_access' });
+
+    let params = new URLSearchParams();
+    Object.keys(data).forEach(key => params.append(key, data[key]))
+
+    return this.http.post(this.config.tokenEndpoint, params.toString(), options)
+      .map(res => {
+        let tokens: AuthTokens = res.json();
+        let now = new Date();
+        tokens.expiration_date = new Date(now.getTime() + tokens.expires_in * 1000).getTime().toString();
+
+        let profile: Profile = jwtDecode(tokens.id_token);
+
+        this.storage.setItem(this.storageName, tokens);
+        this.updateState({authReady: true, tokens, profile});
+        return res;
+      });
+  }
+
+
+
+  private startupTokenRefresh() {
     return this.storage.getItem(this.storageName)
       .flatMap((tokens: AuthTokens) => {
         // check if the token is even in localStorage, if it isn't tell them it's not and return
         if (!tokens) {
-          this.authReady$.next(true);
+          this.updateState({authReady: true});
           return Observable.throw('No token in Storage');
         }
         let profile: Profile = jwtDecode(tokens.id_token);
-        this.state.next({ tokens, profile });
+        this.updateState({ tokens, profile });
 
         if (+tokens.expiration_date > new Date().getTime()) {
-          this.authReady$.next(true);
+          this.updateState({authReady: true});
         }
 
         // it if is able to refresh then the getTokens method will let the app know that we're auth ready
         return this.refreshTokens();
       })
       .catch(error => {
-        this.authReady$.next(true);
+        this.logout();
+        this.updateState({authReady: true});
         return Observable.throw(error);
       });
   }
 
-  scheduleRefresh(): void {
+  private scheduleRefresh(): void {
     this.refreshSubscription$ = this.tokens$
       .first()
       .flatMap(tokens => Observable.interval(tokens.expires_in / 2 * 1000))
       .flatMap(() => this.refreshTokens())
       .subscribe();
   }
-  //initExternal() {
-  // FB.init({
-  //   appId: this.config.facebookAppId,
-  //   status: true,
-  //   cookie: true,
-  //   xfbml: false,
-  //   version: 'v2.8'
-  // });
-
-  // gapi.load('auth', () => { });
-  //}
-
-  // private authorizeFacebook(): Observable<string> {
-  //   return Observable.create((observer: Observer<any>) => {
-  //     try {
-  //       FB.login((response: any) => {
-  //         observer.next(response.authResponse.accessToken);
-  //         observer.complete();
-  //       }, { scope: 'email' });
-  //     } catch (error) {
-  //       observer.error(error);
-  //     }
-  //   });
-
-  // }
-
-  // private authorizeGoogle(): Observable<string> {
-  //   return Observable.create((observer: Observer<any>) => {
-  //     try {
-  //       gapi.auth.authorize({
-  //         client_id: this.config.googleClientId,
-  //         scope: 'profile'
-  //       }, (token: any) => {
-  //         observer.next(token.access_token);
-  //         observer.complete();
-  //       });
-  //     } catch (error) {
-  //       observer.error(error);
-  //     }
-  //   });
-  // }
 }
 
