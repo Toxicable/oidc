@@ -60,14 +60,14 @@ export class OpenIdClientService {
     //   .map(state => state[0].tokens);
 
     this.tokens$ = this.state.filter(state => state.authReady)
-    .map(state => state.tokens);
+      .map(state => state.tokens);
 
     // this.profile$ = Observable.combineLatest(this.state, this.authReady$)
     //   .filter(state => state[1])
     //   .map(state => state[0].profile);
 
     this.profile$ = this.state.filter(state => state.authReady)
-    .map(state => state.profile);
+      .map(state => state.profile);
 
     this.loggedIn$ = this.tokens$.map(tokens => !!tokens);
 
@@ -92,19 +92,17 @@ export class OpenIdClientService {
     return this.authorizeExternal(provider)
       .flatMap((accessToken: string) => {
         localAccessToken = accessToken;
-        return this.backendLogin(accessToken, provider);
-      })
-      .catch(res => {
-        if (autoRegister) {
-          let response = res.json();
-          if (response) {
-            if (response.error_description === 'The user does not exist') {
-              return this.backendRegister(localAccessToken, provider)
-                .flatMap(() => this.backendLogin(localAccessToken, provider));
+        return this.backendLogin(accessToken, provider)
+          .catch(res => {
+            if (autoRegister && res instanceof Response) {
+              let response = res.json();
+              if (response.error_description === 'The user does not exist') {
+                return this.backendRegister(localAccessToken, provider)
+                  .flatMap(() => this.backendLogin(localAccessToken, provider));
+              }
             }
-          }
-        }
-        return Observable.throw(res);
+            return Observable.throw(res);
+          });
       })
       .do(() => this.scheduleRefresh());
   }
@@ -177,20 +175,19 @@ export class OpenIdClientService {
         }
       })
       // we're done with the auth process once we're back at the redirect url or once the window has been closed for some other reason
-      .filter(responseUrl => responseUrl.startsWith(provider.redirect_uri) || !!oauthWindow.closed)
+      .filter(responseUrl => !!oauthWindow.closed || responseUrl.startsWith(provider.redirect_uri))
       .first()
       // make sure it closed for when the user dosent close it themselves
       .do(responseUrl => oauthWindow.close())
       .map(queryString => {
-        if (queryString === '') {
+        if (!queryString) {
           throw new Error('An error occured while retriving the access_token, the returned url was "" which usually means the user closed the window ');
         }
-        //TODO: use better method for parsing
-        let regexParts = /access_token=(.*?)&/.exec(queryString);
-        if (!regexParts) {
+        let searchParams = new URLSearchParams(queryString.split('#').pop());
+        if (!searchParams) {
           throw new Error('An error occured while retriving the access_token, the returned url was: ' + queryString);
         }
-        return regexParts[1];
+        return searchParams.get('access_token');
       });
   }
 
@@ -212,7 +209,7 @@ export class OpenIdClientService {
         let profile: Profile = jwtDecode(tokens.id_token);
 
         this.storage.setItem(this.storageName, tokens);
-        this.updateState({authReady: true, tokens, profile});
+        this.updateState({ authReady: true, tokens, profile });
         return res;
       });
   }
@@ -224,14 +221,14 @@ export class OpenIdClientService {
       .flatMap((tokens: AuthTokens) => {
         // check if the token is even in localStorage, if it isn't tell them it's not and return
         if (!tokens) {
-          this.updateState({authReady: true});
+          this.updateState({ authReady: true });
           return Observable.throw('No token in Storage');
         }
         let profile: Profile = jwtDecode(tokens.id_token);
         this.updateState({ tokens, profile });
 
         if (+tokens.expiration_date > new Date().getTime()) {
-          this.updateState({authReady: true});
+          this.updateState({ authReady: true });
         }
 
         // it if is able to refresh then the getTokens method will let the app know that we're auth ready
@@ -239,7 +236,7 @@ export class OpenIdClientService {
       })
       .catch(error => {
         this.logout();
-        this.updateState({authReady: true});
+        this.updateState({ authReady: true });
         return Observable.throw(error);
       });
   }
