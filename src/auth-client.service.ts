@@ -35,7 +35,18 @@ export class OpenIdClientService {
     private http: Http,
     private storage: Storage,
     @Inject('config') private config: OpenIdClientConfig
-  ) { }
+  ) {
+    this.state = new BehaviorSubject<AuthState>(this.initalState);
+    this.state$ = this.state.asObservable();
+
+    this.tokens$ = this.state.filter(state => state.authReady)
+      .map(state => state.tokens);
+
+    this.profile$ = this.state.filter(state => state.authReady)
+      .map(state => state.profile);
+
+    this.loggedIn$ = this.tokens$.map(tokens => !!tokens);
+  }
 
   private providerOAuthMap = {
     google: 'https://accounts.google.com/o/oauth2/auth',
@@ -53,24 +64,6 @@ export class OpenIdClientService {
   loggedIn$: Observable<boolean>;
 
   init() {
-    this.state = new BehaviorSubject<AuthState>(this.initalState);
-    this.state$ = this.state.asObservable();
-    //  = Observable.combineLatest(this.state, this.authReady$)
-    //   .filter(state => state[1])
-    //   .map(state => state[0].tokens);
-
-    this.tokens$ = this.state.filter(state => state.authReady)
-      .map(state => state.tokens);
-
-    // this.profile$ = Observable.combineLatest(this.state, this.authReady$)
-    //   .filter(state => state[1])
-    //   .map(state => state[0].profile);
-
-    this.profile$ = this.state.filter(state => state.authReady)
-      .map(state => state.profile);
-
-    this.loggedIn$ = this.tokens$.map(tokens => !!tokens);
-
     return this.startupTokenRefresh()
       .do(() => this.scheduleRefresh());
   }
@@ -130,7 +123,7 @@ export class OpenIdClientService {
 
   private updateState(newState: AuthState) {
     let previoudState = this.state.getValue();
-    this.state.next(Object.assign(newState, previoudState));
+    this.state.next(Object.assign({}, previoudState, newState));
   }
 
   private backendRegister(accessToken: string, provider: string) {
