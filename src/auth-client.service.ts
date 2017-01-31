@@ -101,7 +101,7 @@ export class OpenIdClientService {
   }
 
   logout() {
-    this.updateState(this.initalState);
+    this.updateState({ profile: null, tokens: null});
     if (this.refreshSubscription$) {
       this.refreshSubscription$.unsubscribe();
     }
@@ -162,13 +162,13 @@ export class OpenIdClientService {
           // accessing href cross origins will throw
           // so we ignore ones that throw and pass the ones that don't
           // since we know they are on our origin
-          return oauthWindow.location.href;
+          return oauthWindow.location.hash;
         } catch (error) {
           return '';
         }
       })
       // we're done with the auth process once we're back at the redirect url or once the window has been closed for some other reason
-      .filter(responseUrl => !!oauthWindow.closed || responseUrl.startsWith(provider.redirect_uri))
+      .filter(responseUrl => oauthWindow.closed || !!responseUrl)
       .first()
       // make sure it closed for when the user dosent close it themselves
       .do(responseUrl => oauthWindow.close())
@@ -176,7 +176,7 @@ export class OpenIdClientService {
         if (!queryString) {
           throw new Error('An error occured while retriving the access_token, the returned url was "" which usually means the user closed the window ');
         }
-        let searchParams = new URLSearchParams(queryString.split('#').pop());
+        let searchParams = new URLSearchParams(queryString.substr(1));
         if (!searchParams) {
           throw new Error('An error occured while retriving the access_token, the returned url was: ' + queryString);
         }
